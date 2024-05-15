@@ -4,7 +4,11 @@ from PySide2.QtGui import (QBrush, QColor, QConicalGradient, QCursor, QFont,
                            QFontDatabase, QIcon, QKeySequence, QLinearGradient, QPalette, QPainter,
                            QPixmap, QRadialGradient, QStandardItemModel, QStandardItem)
 from PySide2.QtWidgets import *
-from SQL import connect_to_postgres, disconnect_from_postgres, create_table, add_columns_to_table, get_table_columns, fetch_table_data, insert_into_table, get_existing_identifiers
+from SQL import (connect_to_postgres, disconnect_from_postgres,
+                 create_table, add_columns_to_table, get_table_columns,
+                 fetch_table_data, insert_into_table, get_existing_identifiers,
+                 fetch_unit_data, fetch_unit_data_educ_buiilding, fetch_unit_data_auditory,
+                 fetch_unit_data_auditory_types)
 
 #Создание нового окна для добавления данных в таблицу
 class TableDataEntry(QDialog):
@@ -15,12 +19,12 @@ class TableDataEntry(QDialog):
         self.existing_identifiers = existing_identifiers
         self.table_name = table_name
         self.connection1 = connection1
-
-        self.resize(600, 400)
+        self.collected_data = []
 
         self.table = QTableWidget()
         self.btn_add_row = QPushButton('Add Row')
         self.btn_add_row.clicked.connect(self.add_empty_row)
+        self.resize(600, 400)
 
         self.btn_save = QPushButton('Save')
         self.btn_save.clicked.connect(self.save_data)
@@ -47,30 +51,34 @@ class TableDataEntry(QDialog):
             self.table.setCellWidget(row_count, col, item)
 
     def save_data(self):
-        collected_data = []
+        self.collected_data = []
+
+        for row in range(self.table.rowCount()):
+            row_data = []
+            for col in range(self.table.columnCount()):
+                widget = self.table.cellWidget(row, col)
+                if isinstance(widget, QLineEdit):
+                    row_data.append(widget.text())
+            if row_data:
+                self.collected_data.append(tuple(row_data))
+
+        existing_identifiers = get_existing_identifiers(self.connection1, self.table_name)
+        identifiers_set = set(existing_identifiers)
         duplicate_identifiers = set()
 
-        # Получаем список существующих идентификаторов из целевой таблицы
-        existing_identifiers = get_existing_identifiers(self.connection1, self.table_name)
+        for row_data in self.collected_data:
+            identifier = row_data[0] if row_data else None
+            if identifier in identifiers_set:
+                duplicate_identifiers.add(identifier)
+            else:
+                identifiers_set.add(identifier)
 
-        for row_data in collected_data:
-            if row_data and len(row_data) > 0:  # Убеждаемся, что есть данные и что они не пустые
-                identifier = row_data[0]  # Первый элемент предполагается как идентификатор
-                if identifier in existing_identifiers:
-                    QMessageBox.warning(self, "Ошибка",
-                                        f"Идентификатор(ы) {', '.join(duplicate_identifiers)} уже существует(ют). Пожалуйста, исправьте и попробуйте снова.",
-                                        QMessageBox.Ok)
-                else:
-                    try:
-                        insert_into_table(self.connection1, self.table_name, collected_data)
-                        self.accept()  # Закрываем диалог, передавая QDialog.Accepted
-                        print("Данные успешно добавлены в таблицу.")
-                    except Exception as e:
-                        QMessageBox.critical(self, "Ошибка",
-                                             f"Ошибка при добавлении данных в таблицу: {e}",
-                                             QMessageBox.Ok)
-
-
+        if duplicate_identifiers:
+            QMessageBox.warning(self, "Ошибка",
+                                f"Идентификатор(ы) {', '.join(duplicate_identifiers)} уже существует(ют). Пожалуйста, исправьте и попробуйте снова.",
+                                QMessageBox.Ok)
+        else:
+            self.accept()  # Закрываем диалог, передавая QDialog.Accepted
 
 #Создания нового окна для того чтобы создавать столбцы
 class AddColumnDialog(QDialog):
@@ -310,6 +318,7 @@ class Ui_MainWindow(object):
         self.execute = QPushButton(self.horizontalLayoutWidget)
         self.execute.setObjectName(u"execute")
         self.execute.setFont(font2)
+        self.execute.clicked.connect(self.connect_next_table_audit_types)
 
         self.verticalLayout_4.addWidget(self.execute)
 
@@ -320,18 +329,21 @@ class Ui_MainWindow(object):
         self.deleteTable = QPushButton(self.horizontalLayoutWidget)
         self.deleteTable.setObjectName(u"deleteTable")
         self.deleteTable.setFont(font2)
+        self.deleteTable.clicked.connect(self.connect_table)
 
         self.verticalLayout_5.addWidget(self.deleteTable)
 
         self.deleteColumn = QPushButton(self.horizontalLayoutWidget)
         self.deleteColumn.setObjectName(u"deleteColumn")
         self.deleteColumn.setFont(font2)
+        self.deleteColumn.clicked.connect(self.connect_next_table)
 
         self.verticalLayout_5.addWidget(self.deleteColumn)
 
         self.deleteData = QPushButton(self.horizontalLayoutWidget)
         self.deleteData.setObjectName(u"deleteData")
         self.deleteData.setFont(font2)
+        self.deleteData.clicked.connect(self.connect_next_table_audit)
 
         self.verticalLayout_5.addWidget(self.deleteData)
 
@@ -414,7 +426,7 @@ class Ui_MainWindow(object):
 
     # Функция для логики кнопки default
     def set_default_values(self, line_edit_widgets):
-        values = ["postgres", "postgres", "858585", "localhost", "5432"]
+        values = ["SUBD_1", "postgres", "root", "localhost", "5432"]
         for line_edit, value in zip(line_edit_widgets, values):
             line_edit.setText(value)
 
@@ -446,11 +458,10 @@ class Ui_MainWindow(object):
 
             self.model.clear()
             columns = [
-                "id SERIAL PRIMARY KEY",
-                "name VARCHAR(255)",
-                "age INT",
-                "email VARCHAR(255)"
-            ]
+            "id SERIAL PRIMARY KEY",
+            "age INT",
+            "name VARCHAR(255)"
+        ]
             self.socr(columns)
         else:
             # Выведем сообщение об ошибке отсутствия активного соединения
@@ -461,13 +472,15 @@ class Ui_MainWindow(object):
     def on_add_column_on_table_clicked(self):
         table_name = self.input.text().strip()
         dialog = AddColumnDialog()
+        columns = get_table_columns(self.connection1, table_name)
+        last_column = columns[-1]
+        print(columns)
         if dialog.exec_() == QDialog.Accepted:
             column_definition = dialog.column_definition
             print(column_definition)
             if column_definition:
-                add_columns_to_table(self.connection1, table_name, column_definition)
+                add_columns_to_table(self.connection1, table_name, column_definition, last_column)
                 print(f"Добавление столбца: {column_definition}")
-        columns = get_table_columns(self.connection1, table_name)
         self.socr(columns)
 
     #Функция для вывода таблицы
@@ -495,6 +508,7 @@ class Ui_MainWindow(object):
         table_name = self.input.text().strip()
         columns = get_table_columns(self.connection1, table_name)
         existing_identifiers = get_existing_identifiers(self.connection1, table_name)
+
         # Создаем диалоговое окно TableDataEntry с текущим окном в качестве родителя
         dialog = TableDataEntry(columns, existing_identifiers, table_name, self.connection1)
 
@@ -503,11 +517,129 @@ class Ui_MainWindow(object):
         # После завершения диалога, можно проверить результат
         if result == QDialog.Accepted:
             # Здесь можно получить данные из диалога
-            data = dialog.save_data()
-            print(data)
+            data = dialog.collected_data
+            if data:
+                try:
+                    insert_into_table(self.connection1,table_name ,data)
+                    print("Данные успешно добавлены в таблицу.")
+                except:
+                    print("fdlkdf")
+            else:
+                print("Данные не были введены или не прошли проверку уникальности.")
         else:
             print("Действие отменено или закрыто окно")
 
+#Функция которая соединяет две таблицы unit и facultets
+    def connect_table(self):
+        table_name = self.input.text().strip()
+        rows = fetch_unit_data(self.connection1)
+        columns = [
+            "Название факультета",
+            "Здание",
+            "Название кафедры",
+            "Короткое название",
+            "Спец",
+        ]
+        self.clean_output_clicked()
+        # Устанавливаем количество столбцов и заголовки столбцов
+        self.output.setColumnCount(len(columns))
+        self.output.setHorizontalHeaderLabels(columns)
+
+        # Загружаем данные таблицы в QTableWidget
+        self.output.setRowCount(len(rows))
+        for row_idx, row_data in enumerate(rows):
+            for col_idx, cell_value in enumerate(row_data):
+                item = QTableWidgetItem(str(cell_value))
+                self.output.setItem(row_idx, col_idx, item)
+
+        # Устанавливаем размеры столбцов по содержимому
+        self.output.resizeColumnsToContents()
+
+#Функция которая соединяет unit, facultets, educ_buildings
+    def connect_next_table(self):
+        table_name = self.input.text().strip()
+        rows = fetch_unit_data_educ_buiilding(self.connection1)
+        columns = [
+            "Название факультета",
+            "Имя учебного здания",
+            "Сокращенно",
+            "Название кафедры",
+            "Короткое название",
+            "Спец",
+        ]
+        self.clean_output_clicked()
+        # Устанавливаем количество столбцов и заголовки столбцов
+        self.output.setColumnCount(len(columns))
+        self.output.setHorizontalHeaderLabels(columns)
+
+        # Загружаем данные таблицы в QTableWidget
+        self.output.setRowCount(len(rows))
+        for row_idx, row_data in enumerate(rows):
+            for col_idx, cell_value in enumerate(row_data):
+                item = QTableWidgetItem(str(cell_value))
+                self.output.setItem(row_idx, col_idx, item)
+
+        # Устанавливаем размеры столбцов по содержимому
+        self.output.resizeColumnsToContents()
+
+    def connect_next_table_audit(self):
+        table_name = self.input.text().strip()
+        rows = fetch_unit_data_auditory(self.connection1)
+        columns = [
+            "Название факультета",
+            "Имя учебного здания",
+            "Сокращенно",
+            "Название кафедры",
+            "Короткое название",
+            "Спец",
+            "Тип ауидт",
+            "Номер аудит",
+            "Посдка",
+        ]
+        self.clean_output_clicked()
+        # Устанавливаем количество столбцов и заголовки столбцов
+        self.output.setColumnCount(len(columns))
+        self.output.setHorizontalHeaderLabels(columns)
+
+        # Загружаем данные таблицы в QTableWidget
+        self.output.setRowCount(len(rows))
+        for row_idx, row_data in enumerate(rows):
+            for col_idx, cell_value in enumerate(row_data):
+                item = QTableWidgetItem(str(cell_value))
+                self.output.setItem(row_idx, col_idx, item)
+
+        # Устанавливаем размеры столбцов по содержимому
+        self.output.resizeColumnsToContents()
+
+    def connect_next_table_audit_types(self):
+        table_name = self.input.text().strip()
+        rows = fetch_unit_data_auditory_types(self.connection1)
+        columns = [
+            "Название факультета",
+            "Имя учебного здания",
+            "Сокращенно",
+            "Название кафедры",
+            "Короткое название",
+            "Номер аудит",
+            "Тип ауидт",
+            "Посaдка",
+            "Спец",
+        ]
+        self.clean_output_clicked()
+        # Устанавливаем количество столбцов и заголовки столбцов
+        self.output.setColumnCount(len(columns))
+        self.output.setHorizontalHeaderLabels(columns)
+
+        # Загружаем данные таблицы в QTableWidget
+        self.output.setRowCount(len(rows))
+        for row_idx, row_data in enumerate(rows):
+            for col_idx, cell_value in enumerate(row_data):
+                item = QTableWidgetItem(str(cell_value))
+                self.output.setItem(row_idx, col_idx, item)
+
+        # Устанавливаем размеры столбцов по содержимому
+        self.output.resizeColumnsToContents()
+        #Функция которя очищает окно вывода
     def clean_output_clicked(self):
         self.clear_table_widget(self.output)
     #Побочная функция для очистки поля
@@ -519,7 +651,7 @@ class Ui_MainWindow(object):
 
         while table_widget.columnCount() > 0:
             table_widget.removeColumn(0)
-            # Функции для переключения между страницами
+# Функции для переключения между страницами
     def showNextPage(self):
         # Получаем текущий индекс страницы
         currentIndex = self.stackedWidget.currentIndex()
@@ -528,7 +660,7 @@ class Ui_MainWindow(object):
         nextIndex = currentIndex + 1
         if nextIndex < self.stackedWidget.count():
             self.stackedWidget.setCurrentIndex(nextIndex)
-
+#Функция для возвращения на предыдущую старницу
     def return_to_previous_page(self):
         # Получаем текущий индекс страницы
         current_index = self.stackedWidget.currentIndex()
@@ -589,17 +721,15 @@ class Ui_MainWindow(object):
                                                         u"\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0434\u0430\u043d\u043d\u044b\u0435",
                                                         None))
         self.execute.setText(QCoreApplication.translate("MainWindow",
-                                                        u"\u0412\u044b\u043f\u043e\u043b\u043d\u0438\u0442\u044c \u0437\u0430\u043f\u0440\u043e\u0441",
+                                                        u"Соединение всех таблиц",
                                                         None))
         self.deleteTable.setText(QCoreApplication.translate("MainWindow",
-                                                            u"\u0423\u0434\u0430\u043b\u0438\u0442\u044c \u0442\u0430\u0431\u043b\u0438\u0446\u0443",
+                                                            u"Вывод в простом виде",
                                                             None))
         self.deleteColumn.setText(QCoreApplication.translate("MainWindow",
-                                                             u"\u0423\u0434\u0430\u043b\u0438\u0442\u044c \u0441\u0442\u043e\u043b\u0431\u0435\u0446",
+                                                             u"Прямое соедение 2 таблиц",
                                                              None))
-        self.deleteData.setText(QCoreApplication.translate("MainWindow",
-                                                           u"\u0423\u0434\u0430\u043b\u0438\u0442\u044c \u0434\u0430\u043d\u043d\u044b\u0435",
-                                                           None))
+        self.deleteData.setText(QCoreApplication.translate("MainWindow", u"Прямое соединение 3 таблиц", None))
         self.label_8.setText(QCoreApplication.translate("MainWindow",
                                                         u"\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u043b\u0438\u0431\u043e \u0438\u043c\u044f \u0442\u0430\u0431\u043b\u0438\u0446\u044b, \u0438\u043c\u044f \u0441\u0442\u043e\u043b\u0431\u0446\u0430, \u0435\u0433\u043e \u0444\u043e\u0440\u043c\u0430\u0442, \u0434\u0430\u043d\u043d\u044b\u0435 \u0434\u043b\u044f \u0434\u043e\u0431\u0430\u0432\u043b\u0435\u043d\u0438\u044f, SQL \u0437\u0430\u043f\u0440\u043e\u0441",
                                                         None))
